@@ -8,16 +8,16 @@ import (
 )
 
 const (
-	DirName           = ".devvault"
-	DBFileName        = "devvault.db"
-	ConfigFileName    = "config.json"
-	LocalProjectFile  = ".devvault.json"
-	DefaultProfile    = "default"
-	DefaultFileMode   = 0600
-	DefaultDirMode    = 0700
+	AppName          = "devvault"
+	DBFileName       = "devvault.db"
+	ConfigFileName   = "config.json"
+	LocalProjectFile = ".devvault.json"
+	DefaultProfile   = "default"
+	DefaultFileMode  = 0600
+	DefaultDirMode   = 0700
 )
 
-// AppConfig represents global user options stored in ~/.devvault/config.json.
+// AppConfig represents global user configuration settings.
 type AppConfig struct {
 	ActiveProfile string `json:"active_profile"`
 	DBPath        string `json:"db_path,omitempty"`
@@ -28,22 +28,31 @@ type LocalProjectConfig struct {
 	Profile string `json:"profile"`
 }
 
-// GetDevVaultDir returns the absolute path to ~/.devvault directory.
-func GetDevVaultDir() (string, error) {
-	home, err := os.UserHomeDir()
+// GetConfigDir returns the OS-specific user config/data directory.
+// On Windows: %APPDATA%\devvault
+// On macOS: ~/Library/Application Support/devvault
+// On Linux/Unix: ~/.config/devvault (or $XDG_CONFIG_HOME/devvault)
+func GetConfigDir() (string, error) {
+	baseDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("unable to locate user home directory: %w", err)
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", fmt.Errorf("unable to determine user configuration directory: %w", err)
+		}
+		baseDir = filepath.Join(home, ".config")
 	}
-	dir := filepath.Join(home, DirName)
-	if err := os.MkdirAll(dir, DefaultDirMode); err != nil {
-		return "", fmt.Errorf("failed to create devvault configuration directory: %w", err)
+
+	appDir := filepath.Join(baseDir, AppName)
+	if err := os.MkdirAll(appDir, DefaultDirMode); err != nil {
+		return "", fmt.Errorf("failed to create config directory '%s': %w", appDir, err)
 	}
-	return dir, nil
+
+	return appDir, nil
 }
 
 // GetDBPath returns the full path to the SQLite database file.
 func GetDBPath() (string, error) {
-	dir, err := GetDevVaultDir()
+	dir, err := GetConfigDir()
 	if err != nil {
 		return "", err
 	}
@@ -52,14 +61,14 @@ func GetDBPath() (string, error) {
 
 // GetConfigPath returns the full path to config.json.
 func GetConfigPath() (string, error) {
-	dir, err := GetDevVaultDir()
+	dir, err := GetConfigDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, ConfigFileName), nil
 }
 
-// LoadConfig reads the global app configuration.
+// LoadConfig reads the global application configuration.
 func LoadConfig() (*AppConfig, error) {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -76,11 +85,11 @@ func LoadConfig() (*AppConfig, error) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read configuration file: %w", err)
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	if err := json.Unmarshal(data, cfg); err != nil {
-		return cfg, nil // Fallback to defaults on parse error
+		return cfg, nil // Fallback to default if invalid JSON
 	}
 
 	if cfg.ActiveProfile == "" {
@@ -90,7 +99,7 @@ func LoadConfig() (*AppConfig, error) {
 	return cfg, nil
 }
 
-// SaveConfig writes the global app configuration.
+// SaveConfig writes the global application configuration.
 func SaveConfig(cfg *AppConfig) error {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -99,7 +108,7 @@ func SaveConfig(cfg *AppConfig) error {
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("failed to encode configuration: %w", err)
+		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
 	return os.WriteFile(configPath, data, DefaultFileMode)

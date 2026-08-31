@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"devvault/internal/crypto"
 	"devvault/internal/models"
@@ -23,37 +23,36 @@ const (
 	CurrentSchemaVer  = "1"
 )
 
-var (
-	ErrInvalidMasterPassword = errors.New("invalid master password")
-	ErrVaultNotInitialized   = errors.New("vault is not initialized; run 'devvault init' first")
-	ErrProfileNotFound       = errors.New("profile not found")
-	ErrSecretNotFound        = errors.New("secret not found")
-	ErrCannotDeleteDefault   = errors.New("cannot delete default profile")
-)
-
 type Store struct {
-	db *sql.DB
+	dbPath string
+	db     *sql.DB
 }
 
-// Open initializes and returns a SQLite store instance.
+// Open initializes and returns a SQLite store instance with strict file permissions.
 func Open(dbPath string) (*Store, error) {
+	// Ensure parent directory exists
+	dir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create directory for vault database: %w", err)
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database at %s: %w", dbPath, err)
+		return nil, fmt.Errorf("failed to open SQLite database at %s: %w", dbPath, err)
 	}
 
-	// Set file permissions to 0600 on Unix systems
+	// Set file permissions to 0600 (owner read/write only)
 	_ = os.Chmod(dbPath, 0600)
 
-	// Configure pragmas
+	// Configure pragmas for security and performance
 	if _, err := db.Exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;"); err != nil {
-		// Ignore WAL error on restricted filesystems, but try
+		// WAL pragma might fail on restricted filesystems; continue execution
 	}
 
-	return &Store{db: db}, nil
+	return &Store{dbPath: dbPath, db: db}, nil
 }
 
-// Close closes the database connection.
+// Close closes the underlying database connection.
 func (s *Store) Close() error {
 	if s.db != nil {
 		return s.db.Close()
@@ -61,27 +60,33 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// IsInitialized checks if the vault database has been initialized with metadata tables.
+// DBPath returns the file path of the opened vault database.
+func (s *Store) DBPath() string {
+	return s.dbPath
+}
+
+// IsInitialized checks if the vault database metadata table exists.
 func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='meta'").Scan(&count)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("failed to inspect database schema: %w", err)
 	}
 	return count > 0, nil
 }
 
-// InitSchema sets up initial tables, derives master key, and stores authentication sentinel.
+// InitSchema sets up initial tables (`meta`, `profiles`, `secrets`), derives master key, and stores authentication sentinel.
+// Plaintext secrets are NEVER written to disk.
 func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, error) {
 	init, err := s.IsInitialized(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if init {
-		return nil, errors.New("vault is already initialized")
+		return nil, ErrVaultAlreadyInit
 	}
 
-	// Create tables
+	// Create SQLite schema
 	schema := `
 	CREATE TABLE meta (
 		key TEXT PRIMARY KEY,
@@ -113,14 +118,14 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 		return nil, fmt.Errorf("failed to create database tables: %w", err)
 	}
 
-	// Generate salt & derive master key
+	// Generate salt & derive master key via Argon2id
 	salt, err := crypto.GenerateSalt(32)
 	if err != nil {
 		return nil, err
 	}
 	masterKey := crypto.DeriveKey(masterPassword, salt)
 
-	// Encrypt auth sentinel
+	// Encrypt auth sentinel value (verifies master key correctness without storing password/key)
 	authNonce, authCiphertext, err := crypto.Encrypt([]byte(SentinelValue), masterKey, []byte("meta:auth_check"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth sentinel: %w", err)
@@ -214,10 +219,10 @@ func (s *Store) GetProfileByName(ctx context.Context, name string) (*models.Prof
 	var p models.Profile
 	err := s.db.QueryRowContext(ctx, "SELECT id, name, coalesce(description, ''), created_at, updated_at FROM profiles WHERE name = ?", name).
 		Scan(&p.ID, &p.Name, &p.Description, &p.CreatedAt, &p.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrProfileNotFound
-	}
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrProfileNotFound
+		}
 		return nil, err
 	}
 	return &p, nil
@@ -297,10 +302,10 @@ func (s *Store) GetSecret(ctx context.Context, profileName, key string, masterKe
 	var updatedAt models.Secret
 	err = s.db.QueryRowContext(ctx, "SELECT nonce, ciphertext, coalesce(tags, ''), updated_at FROM secrets WHERE profile_id = ? AND key = ?", p.ID, key).
 		Scan(&nonce, &ciphertext, &tags, &updatedAt.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrSecretNotFound
-	}
 	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrSecretNotFound
+		}
 		return nil, err
 	}
 

@@ -13,7 +13,7 @@ import (
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new DevVault database",
-	Long:  "Creates ~/.devvault/devvault.db, prompts for a master password, and sets up Argon2id + AES-256-GCM encryption metadata.",
+	Long:  "Creates OS-specific config directory, prompts for a master password, and sets up SQLite tables & Argon2id encryption metadata.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
@@ -33,7 +33,7 @@ var initCmd = &cobra.Command{
 			return err
 		}
 		if init {
-			fmt.Println("🔒 DevVault database is already initialized.")
+			cmd.Println("🔒 DevVault database is already initialized.")
 			return nil
 		}
 
@@ -56,9 +56,9 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize vault: %w", err)
 		}
 
-		fmt.Println("✅ DevVault successfully initialized!")
-		fmt.Printf("📁 Database location: %s\n", dbPath)
-		fmt.Println("💡 Tip: Use 'devvault set <KEY> [VALUE]' to start storing your secrets.")
+		cmd.Println("✅ DevVault successfully initialized!")
+		cmd.Printf("📁 Database location: %s\n", dbPath)
+		cmd.Println("💡 Tip: Vault database initialized with strict permissions.")
 		return nil
 	},
 }
