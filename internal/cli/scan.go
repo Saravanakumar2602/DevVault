@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 
 	"devvault/internal/scanner"
@@ -13,13 +12,17 @@ var flagStaged bool
 
 var scanCmd = &cobra.Command{
 	Use:   "scan [FILES/DIRECTORIES...]",
-	Short: "Scan code files or Git staged changes for secret leaks",
+	Short: "Scan files or Git staged changes for secret leaks",
+	Long: `Heuristic secret scanner for detecting AWS access keys, GitHub tokens, JWTs, private keys, 
+passwords in config files, .env files, and high-entropy suspicious tokens.
+
+Output includes severity, file path, line number, secret type, and redacted previews.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var findings []scanner.Finding
 		var err error
 
 		if flagStaged {
-			fmt.Println("🔍 Scanning Git staged diff...")
+			cmd.Println("🔍 Scanning Git staged changes...")
 			findings, err = scanner.ScanStagedGitDiff()
 			if err != nil {
 				return err
@@ -28,32 +31,45 @@ var scanCmd = &cobra.Command{
 			for _, target := range args {
 				info, err := os.Stat(target)
 				if err != nil {
-					fmt.Printf("⚠️ Cannot read '%s': %v\n", target, err)
+					cmd.Printf("⚠️ Cannot access '%s': %v\n", target, err)
 					continue
 				}
 
-				if !info.IsDir() {
-					content, err := os.ReadFile(target)
+				if info.IsDir() {
+					dirFindings, err := scanner.ScanDirectory(target)
 					if err == nil {
-						findings = append(findings, scanner.ScanText(target, string(content))...)
+						findings = append(findings, dirFindings...)
+					}
+				} else {
+					fileFindings, err := scanner.ScanFile(target)
+					if err == nil {
+						findings = append(findings, fileFindings...)
 					}
 				}
 			}
 		} else {
-			return fmt.Errorf("please specify files/directories to scan, or use --staged flag")
+			cmd.Println("🔍 Scanning current working directory...")
+			findings, err = scanner.ScanDirectory(".")
+			if err != nil {
+				return err
+			}
 		}
 
 		if len(findings) == 0 {
-			fmt.Println("✅ No secret leaks detected!")
+			cmd.Println("✅ No secret leaks detected.")
 			return nil
 		}
 
-		fmt.Printf("\n🚨 ALERT: Detected %d potential secret leak(s)!\n\n", len(findings))
+		cmd.Printf("\n❌ Detected %d potential secret leak(s)!\n\n", len(findings))
 		for i, f := range findings {
-			fmt.Printf("%d. [%s] File: %s:%d\n   Match: %s\n\n", i+1, f.Rule, f.FilePath, f.LineNumber, f.Match)
+			cmd.Printf("[%d] ❌ Possible %s (Severity: %s)\n", i+1, f.SecretType, f.Severity)
+			cmd.Printf("    File: %s\n", f.FilePath)
+			cmd.Printf("    Line: %d\n", f.LineNumber)
+			cmd.Printf("    Preview: %s\n\n", f.RedactedVal)
 		}
 
-		os.Exit(1) // Return non-zero exit code to halt git pre-commit hook
+		// Return non-zero exit code to halt Git pre-commit hooks when secrets are detected
+		os.Exit(1)
 		return nil
 	},
 }

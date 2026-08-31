@@ -19,6 +19,39 @@ It allows developers to store API keys, database URLs, JWT secrets, and other se
 
 ---
 
+## 🔍 Git Secret Scanner & Pre-Commit Hook
+
+DevVault includes an integrated heuristic secret scanner for inspecting codebases and Git staged changes before committing.
+
+### Features
+- **Patterns Detected**: AWS Access Keys, AWS Secret Keys, GitHub Tokens, Private Key headers, JWTs, `.env` file secret assignments, and high-entropy suspicious tokens.
+- **Redacted Previews**: Previews are safely masked (e.g. `AKIA************` or `ghp_...3456`). Secrets are **never** fully printed.
+- **Filters**: Automatically ignores `.git/`, `.devvault/`, database files (`devvault.db`), `node_modules/`, binary files (null-byte inspection), and comment lines.
+- **Non-Zero Exit Code**: Returns exit status `1` when secrets are detected, making it ideal for CI/CD and pre-commit enforcement.
+
+### Usage
+
+```bash
+# Scan specific files or current directory
+devvault scan
+devvault scan config.yaml src/
+
+# Scan staged Git changes before committing
+devvault scan --staged
+
+# Install automated Git pre-commit hook (.git/hooks/pre-commit)
+devvault install-hook
+```
+
+### ⚠️ Scanner Limitations & Trade-offs
+> [!IMPORTANT]
+> The DevVault secret scanner is a **heuristic inspection tool** designed to catch high-probability accidental leaks before committing. 
+> - **False Negatives**: Highly obfuscated, custom-encoded, or encrypted secret strings may not match standard regex or entropy thresholds.
+> - **False Positives**: Long random hashes (e.g. commit SHA-256 hashes or compiled asset names) may occasionally trigger medium-severity entropy warnings.
+> - **Binary Files**: Binary files containing compiled secrets are skipped by design to avoid high false positive rates.
+
+---
+
 ## 🌐 Environment Profiles & Isolation
 
 DevVault supports isolated environment profiles (e.g. `development`, `testing`, `staging`, `production`).
@@ -45,6 +78,12 @@ devvault run -- npm start
 ---
 
 ## 💻 CLI Command Reference
+
+### Secret Scanner & Hooks
+
+- **`devvault scan [FILES/DIRECTORIES...]`**: Scan files or directory trees for secret leaks.
+- **`devvault scan --staged`**: Scan Git staged diffs (`git diff --staged`).
+- **`devvault install-hook`**: Install automated, idempotent Git pre-commit hook.
 
 ### Profile Management
 
