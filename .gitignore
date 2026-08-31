@@ -1,0 +1,32 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+devvault
+devvault.exe
+
+# Database & Local Vault Files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.devvault/
+.devvault.json
+devvault_backup.json
+
+# Test & Coverage Files
+*.out
+*.test
+*.prof
+coverage.txt
+
+# IDE & System Files
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
