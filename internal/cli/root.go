@@ -19,6 +19,16 @@ API keys, database URLs, and JWT secrets in an AES-256-GCM encrypted database.
 Secrets are injected into application runtimes without leaking to shell histories or disk.`,
 }
 
+// ResetFlags resets persistent flags to default empty states for test isolation.
+func ResetFlags() {
+	flagProfile = ""
+	flagTags = ""
+	flagForce = "" != ""
+	flagImportDryRun = false
+	flagImportForce = false
+	flagStaged = false
+}
+
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

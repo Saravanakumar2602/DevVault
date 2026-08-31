@@ -7,8 +7,8 @@ import (
 	"golang.org/x/term"
 )
 
-// PromptPassword prompts the user for their master password without echoing input.
-// Falls back to DEVVAULT_MASTER_PASSWORD environment variable if non-interactive.
+// PromptPassword prompts the user for their vault master password without terminal echo.
+// Evaluates DEVVAULT_MASTER_PASSWORD environment variable if non-interactive.
 func PromptPassword(prompt string) (string, error) {
 	if envPass := os.Getenv("DEVVAULT_MASTER_PASSWORD"); envPass != "" {
 		return envPass, nil
@@ -27,4 +27,13 @@ func PromptPassword(prompt string) (string, error) {
 	}
 
 	return pass, nil
+}
+
+// PromptBackupPassphrase prompts the user for export/import passphrase.
+// Evaluates DEVVAULT_BACKUP_PASSPHRASE environment variable if present.
+func PromptBackupPassphrase(prompt string) (string, error) {
+	if envBackupPass := os.Getenv("DEVVAULT_BACKUP_PASSPHRASE"); envBackupPass != "" {
+		return envBackupPass, nil
+	}
+	return PromptPassword(prompt)
 }

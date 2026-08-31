@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"devvault/internal/config"
 	"devvault/internal/crypto"
@@ -14,30 +15,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type ExportItem struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-	Tags  string `json:"tags,omitempty"`
-}
-
-type EncryptedBackupPayload struct {
-	Version string       `json:"version"`
-	Profile string       `json:"profile"`
-	Salt    string       `json:"salt"`
-	Nonce   string       `json:"nonce"`
-	Payload string       `json:"payload"` // Base64 AES-GCM encrypted JSON array of ExportItem
-}
-
 var exportCmd = &cobra.Command{
-	Use:   "export [OUTPUT_FILE]",
-	Short: "Export profile secrets to a passphrase-encrypted backup file",
-	Args:  cobra.MaximumNArgs(1),
+	Use:   "export <FILE>",
+	Short: "Export all vault profiles and secrets to an encrypted backup file",
+	Long: `Encrypts and exports all stored profiles and secret keys to an authenticated backup file.
+Plaintext secrets and master passwords are NEVER stored unencrypted.
+The backup file is encrypted using an Export Passphrase with Argon2id KDF and AES-256-GCM AEAD.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
-		outPath := "devvault_backup.json"
-		if len(args) == 1 {
-			outPath = args[0]
-		}
+		outPath := args[0]
 
 		dbPath, err := config.GetDBPath()
 		if err != nil {
@@ -50,7 +37,7 @@ var exportCmd = &cobra.Command{
 		}
 		defer s.Close()
 
-		password, err := PromptPassword("🔑 Vault Master Password: ")
+		password, err := PromptPassword("🔑 Master Password: ")
 		if err != nil {
 			return err
 		}
@@ -61,72 +48,109 @@ var exportCmd = &cobra.Command{
 		}
 		defer crypto.ZeroMemory(masterKey)
 
-		activeProfile := config.ResolveActiveProfile(flagProfile)
-		secrets, err := s.ListSecrets(ctx, activeProfile, masterKey)
+		// 1. Load profiles & secrets into memory
+		profiles, err := s.ListProfiles(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to fetch profiles: %w", err)
 		}
 
-		exportItems := make([]ExportItem, 0, len(secrets))
-		for _, sec := range secrets {
-			exportItems = append(exportItems, ExportItem{
-				Key:   sec.Key,
-				Value: sec.Value,
-				Tags:  sec.Tags,
+		var exportedProfiles []ExportedProfile
+		totalSecrets := 0
+
+		for _, p := range profiles {
+			secList, err := s.ListSecrets(ctx, p.Name, masterKey)
+			if err != nil {
+				return fmt.Errorf("failed to read secrets for profile '%s': %w", p.Name, err)
+			}
+
+			var exportedSecrets []ExportedSecret
+			for _, sec := range secList {
+				exportedSecrets = append(exportedSecrets, ExportedSecret{
+					Key:   sec.Key,
+					Value: sec.Value,
+					Tags:  sec.Tags,
+				})
+				totalSecrets++
+			}
+
+			exportedProfiles = append(exportedProfiles, ExportedProfile{
+				Name:        p.Name,
+				Description: p.Description,
+				Secrets:     exportedSecrets,
 			})
 		}
 
-		rawJSON, err := json.Marshal(exportItems)
-		if err != nil {
-			return fmt.Errorf("failed to encode secrets JSON: %w", err)
+		payload := BackupPayload{
+			ExportedAt: time.Now().UTC(),
+			Profiles:   exportedProfiles,
 		}
 
-		// Prompt for export encryption passphrase
-		exportPass, err := PromptPassword("🔐 Create passphrase for export file encryption: ")
+		rawJSON, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("failed to marshal export payload: %w", err)
+		}
+		defer crypto.ZeroMemory(rawJSON)
+
+		// 2. Prompt for export passphrase
+		exportPass, err := PromptBackupPassphrase("🔐 Create passphrase for backup file encryption: ")
 		if err != nil {
 			return err
 		}
 
-		confirmExportPass, err := PromptPassword("🔐 Confirm export file passphrase: ")
+		confirmPass, err := PromptBackupPassphrase("🔐 Confirm backup file passphrase: ")
 		if err != nil {
 			return err
 		}
 
-		if exportPass != confirmExportPass {
-			return fmt.Errorf("export passphrases do not match")
+		if exportPass != confirmPass {
+			return fmt.Errorf("backup passphrases do not match")
 		}
 
+		// 3. Encrypt payload
 		salt, err := crypto.GenerateSalt(32)
 		if err != nil {
 			return err
 		}
 
-		exportKey := crypto.DeriveKey(exportPass, salt)
+		kdf := crypto.NewArgon2idKDF()
+		exportKey, err := kdf.DeriveKey(exportPass, salt)
+		if err != nil {
+			return fmt.Errorf("failed to derive backup encryption key: %w", err)
+		}
 		defer crypto.ZeroMemory(exportKey)
 
-		nonce, ciphertext, err := crypto.Encrypt(rawJSON, exportKey, []byte("export:"+activeProfile))
+		cipher := crypto.NewAESGCMCipher()
+		nonce, ciphertext, err := cipher.Encrypt(rawJSON, exportKey, []byte(BackupAAD))
 		if err != nil {
-			return fmt.Errorf("failed to encrypt export file: %w", err)
+			return fmt.Errorf("failed to encrypt backup file: %w", err)
 		}
 
-		backup := EncryptedBackupPayload{
-			Version: "1",
-			Profile: activeProfile,
-			Salt:    base64.StdEncoding.EncodeToString(salt),
-			Nonce:   base64.StdEncoding.EncodeToString(nonce),
+		backupFile := EncryptedBackupFile{
+			Version: CurrentBackupVersion,
+			KDF: BackupKDFHeader{
+				Algorithm: kdf.AlgorithmName(),
+				Salt:      base64.StdEncoding.EncodeToString(salt),
+				Time:      kdf.Time,
+				Memory:    kdf.Memory,
+				Threads:   kdf.Threads,
+			},
+			Cipher: BackupCipherHeader{
+				Algorithm: cipher.CipherName(),
+				Nonce:     base64.StdEncoding.EncodeToString(nonce),
+			},
 			Payload: base64.StdEncoding.EncodeToString(ciphertext),
 		}
 
-		fileData, err := json.MarshalIndent(backup, "", "  ")
+		fileData, err := json.MarshalIndent(backupFile, "", "  ")
 		if err != nil {
 			return err
 		}
 
 		if err := os.WriteFile(outPath, fileData, 0600); err != nil {
-			return fmt.Errorf("failed to write export file '%s': %w", outPath, err)
+			return fmt.Errorf("failed to write backup file '%s': %w", outPath, err)
 		}
 
-		fmt.Printf("📦 Encrypted backup of profile '%s' (%d secret(s)) saved to '%s'.\n", activeProfile, len(secrets), outPath)
+		cmd.Printf("📦 Successfully exported %d profile(s) and %d secret(s) to '%s'.\n", len(exportedProfiles), totalSecrets, outPath)
 		return nil
 	},
 }
