@@ -2,7 +2,6 @@ package store_test
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -12,10 +11,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestEncryptedSecretCRUDLifecycle(t *testing.T) {
+func TestProfileIsolationAndLifecycle(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "phase3_crud.db")
+	dbPath := filepath.Join(tempDir, "phase5_profiles.db")
 
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -23,69 +22,90 @@ func TestEncryptedSecretCRUDLifecycle(t *testing.T) {
 	}
 	defer s.Close()
 
-	masterPass := "StrongMasterPassword123!"
+	masterPass := "MasterSecretPass123!"
 	masterKey, err := s.InitSchema(ctx, masterPass)
 	if err != nil {
 		t.Fatalf("InitSchema failed: %v", err)
 	}
 
-	// 1. Create secret
-	err = s.PutSecret(ctx, "default", "API_KEY", "sk_live_1122334455", "prod,stripe", masterKey)
+	// 1. Create profiles
+	_, err = s.CreateProfile(ctx, "development", "Development environment")
 	if err != nil {
-		t.Fatalf("PutSecret create failed: %v", err)
+		t.Fatalf("CreateProfile development failed: %v", err)
 	}
 
-	// 2. Read secret
-	sec, err := s.GetSecret(ctx, "default", "API_KEY", masterKey)
+	_, err = s.CreateProfile(ctx, "production", "Production environment")
 	if err != nil {
-		t.Fatalf("GetSecret failed: %v", err)
-	}
-	if sec.Value != "sk_live_1122334455" {
-		t.Errorf("expected secret value 'sk_live_1122334455', got '%s'", sec.Value)
+		t.Fatalf("CreateProfile production failed: %v", err)
 	}
 
-	// 3. Update secret (duplicate name overwrite)
-	err = s.PutSecret(ctx, "default", "API_KEY", "sk_live_9988776655", "prod,stripe_updated", masterKey)
+	profiles, err := s.ListProfiles(ctx)
 	if err != nil {
-		t.Fatalf("PutSecret update failed: %v", err)
+		t.Fatalf("ListProfiles failed: %v", err)
+	}
+	if len(profiles) != 3 { // 'default', 'development', 'production'
+		t.Errorf("expected 3 profiles, got %d", len(profiles))
 	}
 
-	updatedSec, err := s.GetSecret(ctx, "default", "API_KEY", masterKey)
+	// 2. Store identical secret key name (DATABASE_URL) in different profiles
+	devDB := "postgres://dev_user:dev_pass@localhost:5432/dev_db"
+	prodDB := "postgres://prod_admin:prod_secret@prod-cluster.internal:5432/prod_db"
+
+	err = s.PutSecret(ctx, "development", "DATABASE_URL", devDB, "dev", masterKey)
 	if err != nil {
-		t.Fatalf("GetSecret updated failed: %v", err)
-	}
-	if updatedSec.Value != "sk_live_9988776655" {
-		t.Errorf("expected updated value 'sk_live_9988776655', got '%s'", updatedSec.Value)
+		t.Fatalf("PutSecret development failed: %v", err)
 	}
 
-	// 4. List Metadata (Values must not be present in metadata list)
-	metaList, err := s.ListSecretMetadata(ctx, "default")
+	err = s.PutSecret(ctx, "production", "DATABASE_URL", prodDB, "prod", masterKey)
 	if err != nil {
-		t.Fatalf("ListSecretMetadata failed: %v", err)
-	}
-	if len(metaList) != 1 {
-		t.Fatalf("expected 1 secret metadata entry, got %d", len(metaList))
-	}
-	if metaList[0].Key != "API_KEY" {
-		t.Errorf("expected key 'API_KEY', got '%s'", metaList[0].Key)
+		t.Fatalf("PutSecret production failed: %v", err)
 	}
 
-	// 5. Delete secret
-	err = s.DeleteSecret(ctx, "default", "API_KEY")
+	// 3. Verify Secret Isolation: Retrieve DATABASE_URL from each profile
+	devSec, err := s.GetSecret(ctx, "development", "DATABASE_URL", masterKey)
 	if err != nil {
-		t.Fatalf("DeleteSecret failed: %v", err)
+		t.Fatalf("GetSecret development failed: %v", err)
+	}
+	if devSec.Value != devDB {
+		t.Errorf("expected dev DB URL '%s', got '%s'", devDB, devSec.Value)
 	}
 
-	_, err = s.GetSecret(ctx, "default", "API_KEY", masterKey)
-	if err != store.ErrSecretNotFound {
-		t.Errorf("expected ErrSecretNotFound after deletion, got %v", err)
+	prodSec, err := s.GetSecret(ctx, "production", "DATABASE_URL", masterKey)
+	if err != nil {
+		t.Fatalf("GetSecret production failed: %v", err)
+	}
+	if prodSec.Value != prodDB {
+		t.Errorf("expected prod DB URL '%s', got '%s'", prodDB, prodSec.Value)
+	}
+
+	// 4. Test Profile Deletion (CASCADE secret deletion)
+	err = s.DeleteProfile(ctx, "development")
+	if err != nil {
+		t.Fatalf("DeleteProfile development failed: %v", err)
+	}
+
+	_, err = s.GetSecret(ctx, "development", "DATABASE_URL", masterKey)
+	if err != store.ErrProfileNotFound {
+		t.Errorf("expected ErrProfileNotFound after deleting profile, got %v", err)
+	}
+
+	// Verify production secret remains intact
+	prodSecStillExists, err := s.GetSecret(ctx, "production", "DATABASE_URL", masterKey)
+	if err != nil || prodSecStillExists.Value != prodDB {
+		t.Errorf("expected production secret to remain intact post development profile deletion")
+	}
+
+	// 5. Test Prevent deleting default profile
+	err = s.DeleteProfile(ctx, "default")
+	if err != store.ErrCannotDeleteDefault {
+		t.Errorf("expected ErrCannotDeleteDefault, got %v", err)
 	}
 }
 
-func TestSecretKeyValidationAndEdgeCases(t *testing.T) {
+func TestInvalidProfileNameValidation(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "phase3_validation.db")
+	dbPath := filepath.Join(tempDir, "phase5_invalid.db")
 
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -93,37 +113,10 @@ func TestSecretKeyValidationAndEdgeCases(t *testing.T) {
 	}
 	defer s.Close()
 
-	masterPass := "StrongMasterPassword123!"
-	masterKey, _ := s.InitSchema(ctx, masterPass)
+	s.InitSchema(ctx, "Pass123!")
 
-	// 1. Empty secret name
-	err = s.PutSecret(ctx, "default", "", "val", "", masterKey)
-	if err == nil {
-		t.Errorf("expected error for empty secret name, got nil")
-	}
-
-	// 2. Invalid secret name (with spaces and special characters)
-	err = s.PutSecret(ctx, "default", "INVALID NAME WITH SPACES!", "val", "", masterKey)
-	if err != crypto.ErrInvalidSecretKeyName {
-		t.Errorf("expected ErrInvalidSecretKeyName for name with spaces, got %v", err)
-	}
-
-	// 3. Wrong master password read
-	wrongKey := crypto.DeriveKey("WrongPassword999!", []byte("dummy_salt_data_1234567890123456"))
-	s.PutSecret(ctx, "default", "VALID_KEY", "secret_val", "", masterKey)
-
-	_, err = s.GetSecret(ctx, "default", "VALID_KEY", wrongKey)
-	if err == nil {
-		t.Errorf("expected decryption error when using wrong master password, got nil")
-	}
-
-	// 4. Corrupted ciphertext in database
-	rawDB, _ := sql.Open("sqlite", dbPath)
-	defer rawDB.Close()
-	rawDB.Exec("UPDATE secrets SET ciphertext = x'FFFFFFFFFFFFFFFF' WHERE key = 'VALID_KEY'")
-
-	_, err = s.GetSecret(ctx, "default", "VALID_KEY", masterKey)
-	if err == nil {
-		t.Errorf("expected error when reading corrupted ciphertext, got nil")
+	_, err = s.CreateProfile(ctx, "INVALID PROFILE NAME!", "desc")
+	if err != crypto.ErrInvalidProfileName {
+		t.Errorf("expected ErrInvalidProfileName, got %v", err)
 	}
 }

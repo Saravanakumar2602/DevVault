@@ -202,6 +202,10 @@ func (s *Store) Authenticate(ctx context.Context, masterPassword string) ([]byte
 // Profile CRUD operations
 
 func (s *Store) CreateProfile(ctx context.Context, name, description string) (*models.Profile, error) {
+	if err := crypto.ValidateProfileName(name); err != nil {
+		return nil, err
+	}
+
 	res, err := s.db.ExecContext(ctx, "INSERT INTO profiles (name, description) VALUES (?, ?)", name, description)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create profile '%s': %w", name, err)
@@ -327,8 +331,6 @@ func (s *Store) GetSecret(ctx context.Context, profileName, key string, masterKe
 	}, nil
 }
 
-// ListSecretMetadata returns non-sensitive metadata for all secrets in a profile.
-// Plaintext secrets are NEVER fetched or decrypted.
 func (s *Store) ListSecretMetadata(ctx context.Context, profileName string) ([]*SecretMetadata, error) {
 	p, err := s.GetProfileByName(ctx, profileName)
 	if err != nil {
