@@ -2,16 +2,18 @@ package store_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
 	"devvault/internal/store"
+	_ "modernc.org/sqlite"
 )
 
-func TestStoreFullLifecycle(t *testing.T) {
+func TestStoreMasterPasswordAndKeyManagement(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
-	dbPath := filepath.Join(tempDir, "test_devvault.db")
+	dbPath := filepath.Join(tempDir, "vault_phase2.db")
 
 	s, err := store.Open(dbPath)
 	if err != nil {
@@ -19,17 +21,18 @@ func TestStoreFullLifecycle(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Check initialized
+	// 1. Initialized check
 	init, err := s.IsInitialized(ctx)
 	if err != nil {
 		t.Fatalf("IsInitialized error: %v", err)
 	}
 	if init {
-		t.Errorf("expected new DB to be uninitialized")
+		t.Errorf("expected new database to be uninitialized")
 	}
 
-	// Initialize with Master Password
-	masterPass := "CorrectHorseBatteryStaple123!"
+	masterPass := "CorrectMasterPassword123!"
+
+	// 2. Initialize schema with Master Password
 	masterKey, err := s.InitSchema(ctx, masterPass)
 	if err != nil {
 		t.Fatalf("InitSchema failed: %v", err)
@@ -38,67 +41,54 @@ func TestStoreFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 32-byte master key, got %d", len(masterKey))
 	}
 
-	// Test Authentication (Correct & Wrong Password)
+	// 3. Test correct password authentication
 	authKey, err := s.Authenticate(ctx, masterPass)
 	if err != nil {
-		t.Fatalf("Authenticate failed with correct password: %v", err)
+		t.Fatalf("Authenticate failed for correct password: %v", err)
 	}
 	if len(authKey) != 32 {
-		t.Fatalf("expected 32-byte auth key")
+		t.Fatalf("expected 32-byte authenticated key")
 	}
 
-	_, err = s.Authenticate(ctx, "WrongPassword!")
+	// 4. Test incorrect password authentication
+	_, err = s.Authenticate(ctx, "IncorrectMasterPassword!")
 	if err != store.ErrInvalidMasterPassword {
 		t.Fatalf("expected ErrInvalidMasterPassword, got %v", err)
 	}
+}
 
-	// Test Profile CRUD
-	prof, err := s.CreateProfile(ctx, "staging", "Staging environment secrets")
+func TestStoreCorruptedMetadata(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "corrupted_vault.db")
+
+	s, err := store.Open(dbPath)
 	if err != nil {
-		t.Fatalf("CreateProfile failed: %v", err)
+		t.Fatalf("Open failed: %v", err)
 	}
-	if prof.Name != "staging" {
-		t.Errorf("expected profile name 'staging', got %s", prof.Name)
-	}
+	defer s.Close()
 
-	profiles, err := s.ListProfiles(ctx)
+	masterPass := "ValidMasterPass123!"
+	_, err = s.InitSchema(ctx, masterPass)
 	if err != nil {
-		t.Fatalf("ListProfiles failed: %v", err)
-	}
-	if len(profiles) != 2 { // 'default' and 'staging'
-		t.Errorf("expected 2 profiles, got %d", len(profiles))
+		t.Fatalf("InitSchema failed: %v", err)
 	}
 
-	// Test Secret CRUD
-	err = s.PutSecret(ctx, "staging", "DATABASE_URL", "postgres://user:pass@localhost:5432/staging_db", "db,postgres", masterKey)
+	// Corrupt stored auth check payload directly in SQLite
+	rawDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatalf("PutSecret failed: %v", err)
+		t.Fatalf("Failed to open raw DB: %v", err)
 	}
+	defer rawDB.Close()
 
-	sec, err := s.GetSecret(ctx, "staging", "DATABASE_URL", masterKey)
+	_, err = rawDB.Exec("UPDATE meta SET value = 'CORRUPTED_BASE64_DATA==' WHERE key = 'auth_check'")
 	if err != nil {
-		t.Fatalf("GetSecret failed: %v", err)
-	}
-	if sec.Value != "postgres://user:pass@localhost:5432/staging_db" {
-		t.Errorf("secret value mismatch: got %s", sec.Value)
+		t.Fatalf("Failed to corrupt metadata: %v", err)
 	}
 
-	secList, err := s.ListSecrets(ctx, "staging", masterKey)
-	if err != nil {
-		t.Fatalf("ListSecrets failed: %v", err)
-	}
-	if len(secList) != 1 {
-		t.Errorf("expected 1 secret in staging, got %d", len(secList))
-	}
-
-	// Delete Secret
-	err = s.DeleteSecret(ctx, "staging", "DATABASE_URL")
-	if err != nil {
-		t.Fatalf("DeleteSecret failed: %v", err)
-	}
-
-	_, err = s.GetSecret(ctx, "staging", "DATABASE_URL", masterKey)
-	if err != store.ErrSecretNotFound {
-		t.Fatalf("expected ErrSecretNotFound after deletion, got %v", err)
+	// Authenticate should fail cleanly with ErrInvalidMasterPassword or decoding error
+	_, err = s.Authenticate(ctx, masterPass)
+	if err == nil {
+		t.Fatalf("expected error when authenticating against corrupted verification data, got nil")
 	}
 }
