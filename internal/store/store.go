@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"devvault/internal/crypto"
 	"devvault/internal/models"
@@ -23,6 +24,14 @@ const (
 	CurrentSchemaVer  = "1"
 )
 
+// SecretMetadata holds non-sensitive metadata for secret listing commands.
+type SecretMetadata struct {
+	Key       string    `json:"key"`
+	Tags      string    `json:"tags,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Store struct {
 	dbPath string
 	db     *sql.DB
@@ -30,7 +39,6 @@ type Store struct {
 
 // Open initializes and returns a SQLite store instance with strict file permissions.
 func Open(dbPath string) (*Store, error) {
-	// Ensure parent directory exists
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("failed to create directory for vault database: %w", err)
@@ -41,18 +49,15 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open SQLite database at %s: %w", dbPath, err)
 	}
 
-	// Set file permissions to 0600 (owner read/write only)
 	_ = os.Chmod(dbPath, 0600)
 
-	// Configure pragmas for security and performance
 	if _, err := db.Exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;"); err != nil {
-		// WAL pragma might fail on restricted filesystems; continue execution
+		// WAL pragma optional
 	}
 
 	return &Store{dbPath: dbPath, db: db}, nil
 }
 
-// Close closes the underlying database connection.
 func (s *Store) Close() error {
 	if s.db != nil {
 		return s.db.Close()
@@ -60,12 +65,10 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// DBPath returns the file path of the opened vault database.
 func (s *Store) DBPath() string {
 	return s.dbPath
 }
 
-// IsInitialized checks if the vault database metadata table exists.
 func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='meta'").Scan(&count)
@@ -75,8 +78,6 @@ func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 	return count > 0, nil
 }
 
-// InitSchema sets up initial tables (`meta`, `profiles`, `secrets`), derives master key, and stores authentication sentinel.
-// Plaintext secrets are NEVER written to disk.
 func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, error) {
 	init, err := s.IsInitialized(ctx)
 	if err != nil {
@@ -86,7 +87,6 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 		return nil, ErrVaultAlreadyInit
 	}
 
-	// Create SQLite schema
 	schema := `
 	CREATE TABLE meta (
 		key TEXT PRIMARY KEY,
@@ -118,20 +118,17 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 		return nil, fmt.Errorf("failed to create database tables: %w", err)
 	}
 
-	// Generate salt & derive master key via Argon2id
 	salt, err := crypto.GenerateSalt(32)
 	if err != nil {
 		return nil, err
 	}
 	masterKey := crypto.DeriveKey(masterPassword, salt)
 
-	// Encrypt auth sentinel value (verifies master key correctness without storing password/key)
 	authNonce, authCiphertext, err := crypto.Encrypt([]byte(SentinelValue), masterKey, []byte("meta:auth_check"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth sentinel: %w", err)
 	}
 
-	// Save metadata
 	b64Salt := base64.StdEncoding.EncodeToString(salt)
 	b64AuthNonce := base64.StdEncoding.EncodeToString(authNonce)
 	b64AuthCipher := base64.StdEncoding.EncodeToString(authCiphertext)
@@ -149,7 +146,6 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 		}
 	}
 
-	// Create default profile
 	if _, err := s.db.ExecContext(ctx, "INSERT INTO profiles (name, description) VALUES ('default', 'Default secrets profile')"); err != nil {
 		return nil, fmt.Errorf("failed to create default profile: %w", err)
 	}
@@ -157,7 +153,6 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 	return masterKey, nil
 }
 
-// Authenticate verifies the master password against stored metadata and returns the derived Master Key.
 func (s *Store) Authenticate(ctx context.Context, masterPassword string) ([]byte, error) {
 	init, err := s.IsInitialized(ctx)
 	if err != nil {
@@ -264,6 +259,10 @@ func (s *Store) DeleteProfile(ctx context.Context, name string) error {
 // Secret CRUD operations
 
 func (s *Store) PutSecret(ctx context.Context, profileName, key, value, tags string, masterKey []byte) error {
+	if err := crypto.ValidateSecretKeyName(key); err != nil {
+		return err
+	}
+
 	p, err := s.GetProfileByName(ctx, profileName)
 	if err != nil {
 		return err
@@ -286,12 +285,16 @@ func (s *Store) PutSecret(ctx context.Context, profileName, key, value, tags str
 	`
 	_, err = s.db.ExecContext(ctx, query, p.ID, key, nonce, ciphertext, tags)
 	if err != nil {
-		return fmt.Errorf("failed to save secret '%s': %w", key, err)
+		return fmt.Errorf("failed to save secret: %w", err)
 	}
 	return nil
 }
 
 func (s *Store) GetSecret(ctx context.Context, profileName, key string, masterKey []byte) (*models.DecryptedSecret, error) {
+	if err := crypto.ValidateSecretKeyName(key); err != nil {
+		return nil, err
+	}
+
 	p, err := s.GetProfileByName(ctx, profileName)
 	if err != nil {
 		return nil, err
@@ -312,7 +315,7 @@ func (s *Store) GetSecret(ctx context.Context, profileName, key string, masterKe
 	aad := []byte(fmt.Sprintf("%s:%s", profileName, key))
 	plaintext, err := crypto.Decrypt(nonce, ciphertext, masterKey, aad)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt secret '%s': %w", key, err)
+		return nil, fmt.Errorf("failed to decrypt secret: %w", err)
 	}
 
 	return &models.DecryptedSecret{
@@ -322,6 +325,31 @@ func (s *Store) GetSecret(ctx context.Context, profileName, key string, masterKe
 		Tags:      tags,
 		UpdatedAt: updatedAt.UpdatedAt,
 	}, nil
+}
+
+// ListSecretMetadata returns non-sensitive metadata for all secrets in a profile.
+// Plaintext secrets are NEVER fetched or decrypted.
+func (s *Store) ListSecretMetadata(ctx context.Context, profileName string) ([]*SecretMetadata, error) {
+	p, err := s.GetProfileByName(ctx, profileName)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx, "SELECT key, coalesce(tags, ''), created_at, updated_at FROM secrets WHERE profile_id = ? ORDER BY key ASC", p.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*SecretMetadata
+	for rows.Next() {
+		var m SecretMetadata
+		if err := rows.Scan(&m.Key, &m.Tags, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, &m)
+	}
+	return list, nil
 }
 
 func (s *Store) ListSecrets(ctx context.Context, profileName string, masterKey []byte) ([]*models.DecryptedSecret, error) {
@@ -348,7 +376,6 @@ func (s *Store) ListSecrets(ctx context.Context, profileName string, masterKey [
 		aad := []byte(fmt.Sprintf("%s:%s", profileName, key))
 		plaintext, err := crypto.Decrypt(nonce, ciphertext, masterKey, aad)
 		if err != nil {
-			// Skip or report decryption failure for tampered secrets
 			continue
 		}
 
@@ -364,6 +391,10 @@ func (s *Store) ListSecrets(ctx context.Context, profileName string, masterKey [
 }
 
 func (s *Store) DeleteSecret(ctx context.Context, profileName, key string) error {
+	if err := crypto.ValidateSecretKeyName(key); err != nil {
+		return err
+	}
+
 	p, err := s.GetProfileByName(ctx, profileName)
 	if err != nil {
 		return err

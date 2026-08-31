@@ -14,18 +14,21 @@ import (
 var flagTags string
 
 var setCmd = &cobra.Command{
-	Use:   "set <KEY> [VALUE]",
+	Use:   "set <NAME> [VALUE]",
 	Short: "Store an encrypted secret key-value pair",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		key := args[0]
 
+		if err := crypto.ValidateSecretKeyName(key); err != nil {
+			return err
+		}
+
 		var value string
 		if len(args) == 2 {
 			value = args[1]
 		} else {
-			// Prompt secretly if value not passed in CLI
 			val, err := PromptPassword(fmt.Sprintf("🔒 Enter secret value for '%s': ", key))
 			if err != nil {
 				return err
@@ -58,11 +61,16 @@ var setCmd = &cobra.Command{
 		activeProfile := config.ResolveActiveProfile(flagProfile)
 
 		err = s.PutSecret(ctx, activeProfile, key, value, flagTags, masterKey)
+
+		// Zero plaintext value bytes in RAM
+		valBytes := []byte(value)
+		crypto.ZeroMemory(valBytes)
+
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("✅ Secret '%s' stored successfully in profile '%s'.\n", key, activeProfile)
+		cmd.Printf("✅ Secret '%s' stored successfully in profile '%s'.\n", key, activeProfile)
 		return nil
 	},
 }

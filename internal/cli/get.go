@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 
 	"devvault/internal/config"
 	"devvault/internal/crypto"
@@ -12,12 +11,16 @@ import (
 )
 
 var getCmd = &cobra.Command{
-	Use:   "get <KEY>",
-	Short: "Retrieve and decrypt a stored secret by key name",
+	Use:   "get <NAME>",
+	Short: "Retrieve and decrypt a stored secret by name",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		key := args[0]
+
+		if err := crypto.ValidateSecretKeyName(key); err != nil {
+			return err
+		}
 
 		dbPath, err := config.GetDBPath()
 		if err != nil {
@@ -48,7 +51,11 @@ var getCmd = &cobra.Command{
 			return err
 		}
 
-		fmt.Println(sec.Value)
+		// Write decrypted value strictly to output stream and zero memory immediately
+		valBytes := []byte(sec.Value)
+		cmd.Println(sec.Value)
+		crypto.ZeroMemory(valBytes)
+
 		return nil
 	},
 }

@@ -3,21 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"devvault/internal/config"
-	"devvault/internal/crypto"
 	"devvault/internal/store"
 
 	"github.com/spf13/cobra"
 )
 
-var flagShowSecret bool
-
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List stored secret keys in the target profile",
+	Short: "List secret names and metadata in the target profile (secret values are never displayed)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 
@@ -37,39 +33,35 @@ var listCmd = &cobra.Command{
 			return err
 		}
 
-		masterKey, err := s.Authenticate(ctx, password)
+		_, err = s.Authenticate(ctx, password)
 		if err != nil {
 			return err
 		}
-		defer crypto.ZeroMemory(masterKey)
 
 		activeProfile := config.ResolveActiveProfile(flagProfile)
 
-		secrets, err := s.ListSecrets(ctx, activeProfile, masterKey)
+		// List metadata only - secret values are never queried or decrypted
+		metaList, err := s.ListSecretMetadata(ctx, activeProfile)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("📋 Profile: %s (%d secret(s))\n\n", activeProfile, len(secrets))
-		if len(secrets) == 0 {
-			fmt.Println("No secrets found in this profile.")
+		cmd.Printf("📋 Profile: %s (%d secret(s))\n\n", activeProfile, len(metaList))
+		if len(metaList) == 0 {
+			cmd.Println("No secrets found in this profile.")
 			return nil
 		}
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "KEY\tVALUE\tTAGS\tUPDATED AT")
-		fmt.Fprintln(w, "---\t-----\t----\t----------")
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "KEY\tTAGS\tCREATED AT\tUPDATED AT")
+		fmt.Fprintln(w, "---\t----\t----------\t----------")
 
-		for _, sec := range secrets {
-			valDisplay := "********"
-			if flagShowSecret {
-				valDisplay = sec.Value
-			}
-			tagsDisplay := sec.Tags
+		for _, meta := range metaList {
+			tagsDisplay := meta.Tags
 			if tagsDisplay == "" {
 				tagsDisplay = "-"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", sec.Key, valDisplay, tagsDisplay, sec.UpdatedAt.Format("2006-01-02 15:04:05"))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", meta.Key, tagsDisplay, meta.CreatedAt.Format("2006-01-02 15:04:05"), meta.UpdatedAt.Format("2006-01-02 15:04:05"))
 		}
 
 		w.Flush()
@@ -78,6 +70,5 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
-	listCmd.Flags().BoolVar(&flagShowSecret, "show", false, "Display unmasked secret values in table output")
 	RootCmd.AddCommand(listCmd)
 }

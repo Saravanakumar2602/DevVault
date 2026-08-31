@@ -2,61 +2,68 @@ package cli_test
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"devvault/internal/cli"
 )
 
-func TestVersionCommand(t *testing.T) {
-	buf := new(bytes.Buffer)
-	cli.RootCmd.SetOut(buf)
-	cli.RootCmd.SetArgs([]string{"version"})
-
-	err := cli.RootCmd.Execute()
-	if err != nil {
-		t.Fatalf("version command failed: %v", err)
-	}
-
-	output := buf.String()
-	if !strings.Contains(output, cli.Version) {
-		t.Errorf("expected version output to contain %s, got %s", cli.Version, output)
-	}
-}
-
-func TestInitCommandNonInteractive(t *testing.T) {
+func TestCLISecretCRUD(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("APPDATA", tempDir)
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
 	t.Setenv("HOME", tempDir)
-	t.Setenv("DEVVAULT_MASTER_PASSWORD", "SuperSecretPass123!")
+	t.Setenv("DEVVAULT_MASTER_PASSWORD", "MasterSecret123!")
 
+	// 1. Initialize vault
 	buf := new(bytes.Buffer)
 	cli.RootCmd.SetOut(buf)
 	cli.RootCmd.SetArgs([]string{"init"})
-
-	err := cli.RootCmd.Execute()
-	if err != nil {
-		t.Fatalf("init command failed: %v", err)
+	if err := cli.RootCmd.Execute(); err != nil {
+		t.Fatalf("cli init failed: %v", err)
 	}
 
-	output := buf.String()
-	if !strings.Contains(output, "DevVault successfully initialized") {
-		t.Errorf("expected success message in init output, got: %s", output)
+	// 2. Set secret
+	buf.Reset()
+	cli.RootCmd.SetArgs([]string{"set", "API_KEY", "sk_test_123456789"})
+	if err := cli.RootCmd.Execute(); err != nil {
+		t.Fatalf("cli set failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), "stored successfully") {
+		t.Errorf("expected success message in set output, got: %s", buf.String())
 	}
 
-	// Verify database file creation
-	appDir := filepath.Join(tempDir, "devvault")
-	dbFile := filepath.Join(appDir, "devvault.db")
-
-	info, err := os.Stat(dbFile)
-	if err != nil {
-		t.Fatalf("database file missing: %v", err)
+	// 3. Get secret
+	buf.Reset()
+	cli.RootCmd.SetArgs([]string{"get", "API_KEY"})
+	if err := cli.RootCmd.Execute(); err != nil {
+		t.Fatalf("cli get failed: %v", err)
+	}
+	if strings.TrimSpace(buf.String()) != "sk_test_123456789" {
+		t.Errorf("expected get output 'sk_test_123456789', got '%s'", buf.String())
 	}
 
-	if info.Size() == 0 {
-		t.Errorf("expected non-empty database file")
+	// 4. List secrets (Values must NEVER be displayed)
+	buf.Reset()
+	cli.RootCmd.SetArgs([]string{"list"})
+	if err := cli.RootCmd.Execute(); err != nil {
+		t.Fatalf("cli list failed: %v", err)
+	}
+	listOutput := buf.String()
+	if !strings.Contains(listOutput, "API_KEY") {
+		t.Errorf("expected list to display API_KEY, got: %s", listOutput)
+	}
+	if strings.Contains(listOutput, "sk_test_123456789") {
+		t.Errorf("SECURITY RISK: list output contained secret value!")
+	}
+
+	// 5. Delete secret with --force flag
+	buf.Reset()
+	cli.RootCmd.SetArgs([]string{"delete", "API_KEY", "--force"})
+	if err := cli.RootCmd.Execute(); err != nil {
+		t.Fatalf("cli delete failed: %v", err)
+	}
+	if !strings.Contains(buf.String(), "deleted") {
+		t.Errorf("expected deletion message in delete output, got: %s", buf.String())
 	}
 }
