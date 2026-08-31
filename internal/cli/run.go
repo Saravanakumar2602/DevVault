@@ -15,8 +15,12 @@ import (
 
 var runCmd = &cobra.Command{
 	Use:   "run -- <COMMAND> [ARGS...]",
-	Short: "Execute a command with decrypted secrets injected as environment variables",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Execute a command with decrypted secrets injected into the process environment",
+	Long: `Executes a command with secrets injected as environment variables directly in memory.
+Secrets are never written to disk or passed as command line parameters.
+
+Precedence Rule: Vault Secrets > Existing OS Environment Variables.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		subCmd := args[0]
@@ -57,9 +61,9 @@ var runCmd = &cobra.Command{
 		}
 
 		r := runner.NewRunner()
-		exitCode, err := r.Run(ctx, subCmd, subArgs, secretMap, os.Stdin, os.Stdout, os.Stderr)
+		exitCode, err := r.Run(ctx, subCmd, subArgs, secretMap, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 
-		// Zero out secret values in memory map
+		// Zero secrets in memory map
 		for k, v := range secretMap {
 			b := []byte(v)
 			crypto.ZeroMemory(b)
