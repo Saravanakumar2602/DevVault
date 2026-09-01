@@ -13,7 +13,7 @@ import (
 func TestEndToEndCLIFlow(t *testing.T) {
 	tempDir := t.TempDir()
 	binPath := filepath.Join(tempDir, "devvault.exe")
-	dbPath := filepath.Join(tempDir, "e2e_vault.db")
+	dbPath := filepath.Join(tempDir, "devvault", "devvault.db")
 
 	// Compile devvault binary
 	buildCmd := exec.Command("go", "build", "-o", binPath, "../cmd/devvault")
@@ -28,6 +28,8 @@ func TestEndToEndCLIFlow(t *testing.T) {
 		cmd := exec.Command(binPath, args...)
 		cmd.Env = append(os.Environ(),
 			"DEVVAULT_MASTER_PASSWORD="+masterPass,
+			"APPDATA="+tempDir,
+			"XDG_CONFIG_HOME="+tempDir,
 			"HOME="+tempDir,
 			"USERPROFILE="+tempDir,
 		)
@@ -63,7 +65,7 @@ func TestEndToEndCLIFlow(t *testing.T) {
 		t.Errorf("expected get output 'sk_test_998877665544332211', got '%s'", out)
 	}
 
-	// 4. List Secrets
+	// 4. List Secrets (Values must NOT be in output)
 	out, err = runCLI("list")
 	if err != nil {
 		t.Fatalf("devvault list failed: %v, output: %s", err, out)
@@ -109,13 +111,12 @@ func TestEndToEndCLIFlow(t *testing.T) {
 		t.Errorf("expected injected DB_HOST 'prod-db.internal.net', got '%s'", out)
 	}
 
-	// 7. Delete Secret
-	out, err = runCLI("delete", "DB_HOST")
+	// 7. Delete Secret with --force
+	out, err = runCLI("delete", "DB_HOST", "--force")
 	if err != nil {
 		t.Fatalf("devvault delete failed: %v, output: %s", err, out)
 	}
 
-	// Suppress unused var warning
 	_ = dbPath
 	_ = context.Background()
 }

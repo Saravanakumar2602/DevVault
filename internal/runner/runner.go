@@ -63,24 +63,33 @@ func (r *Runner) Run(ctx context.Context, command string, args []string, secretE
 	// Setup signal forwarding (relay SIGINT / SIGTERM to child process)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigChan)
-
-	// Start child process
-	if err := cmd.Start(); err != nil {
-		return 1, fmt.Errorf("failed to start process '%s': %w", command, err)
-	}
+	doneChan := make(chan struct{})
 
 	// Forward signals to child process in background
 	go func() {
-		for sig := range sigChan {
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(sig)
+		for {
+			select {
+			case sig := <-sigChan:
+				if cmd.Process != nil {
+					_ = cmd.Process.Signal(sig)
+				}
+			case <-doneChan:
+				return
 			}
 		}
 	}()
 
+	// Start child process
+	if err := cmd.Start(); err != nil {
+		close(doneChan)
+		signal.Stop(sigChan)
+		return 1, fmt.Errorf("failed to start process '%s': %w", command, err)
+	}
+
 	// Wait for process completion
 	err := cmd.Wait()
+	close(doneChan)
+	signal.Stop(sigChan)
 
 	// Zero secret environment map in memory immediately post-execution
 	for k, v := range secretEnv {

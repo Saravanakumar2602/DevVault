@@ -11,11 +11,11 @@ import (
 
 func TestFalseNegativesDetection(t *testing.T) {
 	testCases := []struct {
-		name          string
-		content       string
-		filePath      string
-		expectedRule  string
-		expectedSev   string
+		name         string
+		content      string
+		filePath     string
+		expectedRule string
+		expectedSev  string
 	}{
 		{
 			name:         "AWS Access Key ID",

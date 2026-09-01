@@ -17,9 +17,9 @@ const (
 )
 
 var (
-	ErrInvalidSaltLength     = errors.New("salt length must be at least 16 bytes")
-	ErrEmptyMasterPassword   = errors.New("master password cannot be empty")
-	ErrFailedToGenerateSalt  = errors.New("crypto/rand failed to generate random salt")
+	ErrInvalidSaltLength    = errors.New("salt length must be at least 16 bytes")
+	ErrEmptyMasterPassword  = errors.New("master password cannot be empty")
+	ErrFailedToGenerateSalt = errors.New("crypto/rand failed to generate random salt")
 )
 
 // Argon2idKDF implements KeyDeriver using the Argon2id key derivation algorithm.
