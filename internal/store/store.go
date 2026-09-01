@@ -78,6 +78,7 @@ func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 	return count > 0, nil
 }
 
+// InitSchema atomically initializes database schema and metadata within an explicit transaction.
 func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, error) {
 	init, err := s.IsInitialized(ctx)
 	if err != nil {
@@ -86,6 +87,12 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 	if init {
 		return nil, ErrVaultAlreadyInit
 	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
 
 	schema := `
 	CREATE TABLE meta (
@@ -114,7 +121,7 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 		UNIQUE(profile_id, key)
 	);
 	`
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("failed to create database tables: %w", err)
 	}
 
@@ -126,6 +133,7 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 
 	authNonce, authCiphertext, err := crypto.Encrypt([]byte(SentinelValue), masterKey, []byte("meta:auth_check"))
 	if err != nil {
+		crypto.ZeroMemory(masterKey)
 		return nil, fmt.Errorf("failed to create auth sentinel: %w", err)
 	}
 
@@ -141,13 +149,20 @@ func (s *Store) InitSchema(ctx context.Context, masterPassword string) ([]byte, 
 	}
 
 	for k, v := range metaEntries {
-		if _, err := s.db.ExecContext(ctx, "INSERT INTO meta (key, value) VALUES (?, ?)", k, v); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO meta (key, value) VALUES (?, ?)", k, v); err != nil {
+			crypto.ZeroMemory(masterKey)
 			return nil, fmt.Errorf("failed to save metadata %s: %w", k, err)
 		}
 	}
 
-	if _, err := s.db.ExecContext(ctx, "INSERT INTO profiles (name, description) VALUES ('default', 'Default secrets profile')"); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO profiles (name, description) VALUES ('default', 'Default secrets profile')"); err != nil {
+		crypto.ZeroMemory(masterKey)
 		return nil, fmt.Errorf("failed to create default profile: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		crypto.ZeroMemory(masterKey)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return masterKey, nil
