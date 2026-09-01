@@ -12,191 +12,188 @@ import (
 	"strings"
 )
 
+// DefaultIgnoredPaths lists standard directory & file names skipped during secret scanning.
+var DefaultIgnoredPaths = []string{
+	".git",
+	".devvault",
+	"devvault.db",
+	"node_modules",
+	"vendor",
+	"go.sum",
+	"go.mod",
+	"scanner.go",
+	"scanner_test.go",
+}
+
+// Finding represents a single detected secret leak.
 type Finding struct {
-	Severity    string `json:"severity"` // HIGH, MEDIUM, LOW
-	FilePath    string `json:"file_path"`
-	LineNumber  int    `json:"line_number"`
-	SecretType  string `json:"secret_type"`
-	RedactedVal string `json:"redacted_preview"`
+	FilePath    string
+	LineNumber  int
+	SecretType  string
+	Severity    string
+	RedactedVal string
 }
 
-type PatternRule struct {
-	Name     string
-	Severity string
-	Pattern  *regexp.Regexp
+// Rule defines a regex matching rule for secret scanner heuristics.
+type Rule struct {
+	Name       string
+	Severity   string
+	Regex      *regexp.Regexp
+	RedactFunc func(match string) string
 }
 
-var DefaultRules = []PatternRule{
-	{
-		Name:     "AWS Access Key ID",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}`),
-	},
-	{
-		Name:     "AWS Secret Access Key",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`(?i)aws(.{0,20})?['"][0-9a-zA-Z/+]{40}['"]`),
-	},
-	{
-		Name:     "GitHub Personal Access Token",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`(ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}`),
-	},
-	{
-		Name:     "Generic Private Key",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`-----BEGIN (RSA|EC|DSA|OPENSSH|PRIVATE)( PRIVATE)? KEY-----`),
-	},
-	{
-		Name:     "JSON Web Token (JWT)",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+`),
-	},
-	{
-		Name:     "Configuration / Env Secret Assignment",
-		Severity: "HIGH",
-		Pattern:  regexp.MustCompile(`(?i)(api_key|apikey|secret_key|app_secret|password|passwd|auth_token|jwt_secret|database_url|db_url|conn_str|secret)\s*[:=]\s*["']?([a-zA-Z0-9_/+=\-!@#$%^&*]{8,})["']?`),
-	},
+// Scanner performs secret leak inspection across files and git diffs.
+type Scanner struct {
+	rules []Rule
 }
 
-// CalculateEntropy computes Shannon entropy in bits per character for a given string.
-func CalculateEntropy(s string) float64 {
-	if len(s) == 0 {
-		return 0.0
+// NewScanner returns a Scanner populated with heuristic secret rules.
+func NewScanner() *Scanner {
+	return &Scanner{
+		rules: []Rule{
+			{
+				Name:     "AWS Access Key ID",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`\b(AKIA[0-9A-Z]{16})\b`),
+				RedactFunc: func(match string) string {
+					if len(match) >= 4 {
+						return match[:4] + "************"
+					}
+					return "************"
+				},
+			},
+			{
+				Name:     "AWS Secret Access Key",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`(?i)\b(aws_secret_access_key|aws_secret_key)\s*[:=]\s*["']?([A-Za-z0-9/+=]{40})["']?`),
+				RedactFunc: func(match string) string {
+					return "AWS_SECRET_KEY=****************************************"
+				},
+			},
+			{
+				Name:     "GitHub Personal Access Token",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`\b(ghp_[A-Za-z0-9_]{36})\b`),
+				RedactFunc: func(match string) string {
+					if len(match) >= 8 {
+						return match[:4] + "..." + match[len(match)-4:]
+					}
+					return "ghp_************"
+				},
+			},
+			{
+				Name:     "Generic Private Key",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----`),
+				RedactFunc: func(match string) string {
+					return "-----BEGIN PRIVATE KEY----- [REDACTED]"
+				},
+			},
+			{
+				Name:     "JSON Web Token (JWT)",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b`),
+				RedactFunc: func(match string) string {
+					if len(match) >= 6 {
+						return match[:3] + "..." + match[len(match)-3:]
+					}
+					return "JWT_REDACTED"
+				},
+			},
+			{
+				Name:     "Configuration / Env Secret Assignment",
+				Severity: "HIGH",
+				Regex:    regexp.MustCompile(`(?i)\b(API_KEY|SECRET_KEY|DATABASE_URL|AUTH_TOKEN|PASSWORD|PRIVATE_KEY)\s*[:=]\s*["']?([^\s"'#]{8,})["']?`),
+				RedactFunc: func(match string) string {
+					parts := strings.SplitN(match, "=", 2)
+					if len(parts) != 2 {
+						parts = strings.SplitN(match, ":", 2)
+					}
+					if len(parts) == 2 {
+						return strings.TrimSpace(parts[0]) + "=************"
+					}
+					return "SECRET=************"
+				},
+			},
+		},
 	}
-
-	freq := make(map[rune]float64)
-	for _, r := range s {
-		freq[r]++
-	}
-
-	var entropy float64
-	length := float64(len(s))
-	for _, count := range freq {
-		p := count / length
-		entropy -= p * math.Log2(p)
-	}
-
-	return entropy
 }
 
-// IsBinaryContent checks if a byte slice contains binary/null byte data.
-func IsBinaryContent(data []byte) bool {
-	checkLen := len(data)
-	if checkLen > 512 {
-		checkLen = 512
-	}
-	return bytes.IndexByte(data[:checkLen], 0) != -1
-}
-
-// ShouldSkipPath checks if a file path should be ignored by the scanner.
+// ShouldSkipPath determines whether a file or directory path should be excluded from scanning.
 func ShouldSkipPath(path string) bool {
 	clean := filepath.ToSlash(path)
-
-	// Ignore .git, .devvault, node_modules, vendor, devvault storage files
-	ignoredSubstrings := []string{
-		"/.git/", "/.devvault/", "/node_modules/", "/vendor/",
-		"devvault.db", "devvault.exe", ".gitignore",
-	}
-
-	for _, ign := range ignoredSubstrings {
-		if strings.Contains(clean, ign) || strings.HasPrefix(clean, strings.TrimPrefix(ign, "/")) {
+	base := filepath.Base(clean)
+	for _, ign := range DefaultIgnoredPaths {
+		if base == ign || strings.Contains(clean, "/"+ign+"/") || strings.HasPrefix(clean, ign+"/") {
 			return true
 		}
 	}
-
-	// Skip binary / archive extensions
-	ignoredExts := []string{".exe", ".db", ".zip", ".tar", ".gz", ".png", ".jpg", ".jpeg", ".pdf", ".so", ".dll", ".dylib"}
-	ext := strings.ToLower(filepath.Ext(clean))
-	for _, ignExt := range ignoredExts {
-		if ext == ignExt {
-			return true
-		}
-	}
-
 	return false
 }
 
-// RedactSecret returns a safe preview of a secret string without exposing full plaintext.
-func RedactSecret(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= 6 {
-		return "******"
+// IsBinaryContent inspects byte header to check for binary/null bytes.
+func IsBinaryContent(data []byte) bool {
+	if len(data) == 0 {
+		return false
 	}
-	if strings.HasPrefix(s, "AKIA") || strings.HasPrefix(s, "ASIA") {
-		return s[:4] + "************"
+	limit := 512
+	if len(data) < limit {
+		limit = len(data)
 	}
-	if strings.HasPrefix(s, "ghp_") || strings.HasPrefix(s, "gho_") {
-		return s[:4] + "..." + s[len(s)-4:]
-	}
-	return s[:3] + "..." + s[len(s)-3:]
+	return bytes.IndexByte(data[:limit], 0) != -1
 }
 
-// ScanText scans string text line-by-line and returns detected findings.
-func ScanText(filePath string, text string) []Finding {
-	if ShouldSkipPath(filePath) {
-		return nil
-	}
-
+// ScanText scans string text content for secret leaks.
+func ScanText(filePath, content string) []Finding {
+	s := NewScanner()
 	var findings []Finding
-	scanner := bufio.NewScanner(strings.NewReader(text))
+	scanner := bufio.NewScanner(strings.NewReader(content))
 	lineNum := 0
-
-	isEnvFile := strings.HasSuffix(filePath, ".env") || strings.Contains(filePath, ".env.")
 
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
-		// Ignore comments and empty lines
-		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") || len(trimmed) == 0 {
+		// Skip comments and redacted preview strings
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") || strings.Contains(line, "****") {
 			continue
 		}
 
-		// 1. Pattern Matching
-		for _, rule := range DefaultRules {
-			if rule.Pattern.MatchString(line) {
-				match := rule.Pattern.FindString(line)
-				sev := rule.Severity
-				if isEnvFile {
-					sev = "HIGH"
-				}
-
+		// 1. Check Regex Rules
+		for _, r := range s.rules {
+			if match := r.Regex.FindString(line); match != "" {
 				findings = append(findings, Finding{
-					Severity:    sev,
 					FilePath:    filePath,
 					LineNumber:  lineNum,
-					SecretType:  rule.Name,
-					RedactedVal: RedactSecret(match),
+					SecretType:  r.Name,
+					Severity:    r.Severity,
+					RedactedVal: r.RedactFunc(match),
 				})
 			}
 		}
 
-		// 2. High-Entropy Tokens (Shannon Entropy > 4.5 bits/char)
-		words := strings.Fields(line)
-		for _, word := range words {
-			cleanWord := strings.Trim(word, `"',:;=(){}[]<>`)
-			// Filter out common false positives (e.g. URLs, standard identifiers)
-			if strings.HasPrefix(cleanWord, "http://") || strings.HasPrefix(cleanWord, "https://") {
-				continue
-			}
-
-			if len(cleanWord) >= 24 && CalculateEntropy(cleanWord) >= 4.5 {
-				alreadyFound := false
+		// 2. Check Shannon Entropy (> 4.5 bits per char on single tokens)
+		tokens := strings.Fields(line)
+		for _, token := range tokens {
+			cleanToken := strings.Trim(token, `"',;:()[]={}`)
+			if len(cleanToken) >= 20 && calculateShannonEntropy(cleanToken) > 4.5 {
+				// Avoid duplicate findings if already matched by regex rule
+				alreadyMatched := false
 				for _, f := range findings {
 					if f.LineNumber == lineNum {
-						alreadyFound = true
+						alreadyMatched = true
 						break
 					}
 				}
-				if !alreadyFound {
+				if !alreadyMatched {
+					preview := cleanToken[:4] + "..." + cleanToken[len(cleanToken)-4:]
 					findings = append(findings, Finding{
-						Severity:    "MEDIUM",
 						FilePath:    filePath,
 						LineNumber:  lineNum,
-						SecretType:  "High Entropy Token (>4.5 bits)",
-						RedactedVal: RedactSecret(cleanWord),
+						SecretType:  "Possible High Entropy Token (>4.5 bits)",
+						Severity:    "MEDIUM",
+						RedactedVal: preview,
 					})
 				}
 			}
@@ -206,7 +203,7 @@ func ScanText(filePath string, text string) []Finding {
 	return findings
 }
 
-// ScanFile inspects a single file on disk.
+// ScanFile scans a single file on disk for secrets.
 func ScanFile(filePath string) ([]Finding, error) {
 	if ShouldSkipPath(filePath) {
 		return nil, nil
@@ -214,7 +211,7 @@ func ScanFile(filePath string) ([]Finding, error) {
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read file '%s': %w", filePath, err)
+		return nil, err
 	}
 
 	if IsBinaryContent(data) {
@@ -226,7 +223,7 @@ func ScanFile(filePath string) ([]Finding, error) {
 
 // ScanDirectory recursively scans all files in a directory tree.
 func ScanDirectory(dirPath string) ([]Finding, error) {
-	var allFindings []Finding
+	var findings []Finding
 
 	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -240,82 +237,101 @@ func ScanDirectory(dirPath string) ([]Finding, error) {
 			return nil
 		}
 
-		findings, err := ScanFile(path)
+		if ShouldSkipPath(path) {
+			return nil
+		}
+
+		fileFindings, err := ScanFile(path)
 		if err == nil {
-			allFindings = append(allFindings, findings...)
+			findings = append(findings, fileFindings...)
 		}
 		return nil
 	})
 
-	return allFindings, err
+	return findings, err
 }
 
-// ScanStagedGitDiff scans staged Git diffs via 'git diff --staged -U0'.
+// ScanStagedGitDiff runs git diff --staged to scan staged changes before committing.
 func ScanStagedGitDiff() ([]Finding, error) {
-	cmd := exec.Command("git", "diff", "--staged", "-U0")
-	output, err := cmd.Output()
+	cmd := exec.Command("git", "diff", "--staged", "--name-only")
+	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to run git diff (ensure current directory is a git repository): %w", err)
+		return nil, fmt.Errorf("failed to run git diff: %w", err)
 	}
 
-	var findings []Finding
-	var currentFile string
-	lineNum := 0
+	files := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var allFindings []Finding
 
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "+++ b/") {
-			currentFile = strings.TrimPrefix(line, "+++ b/")
-			lineNum = 0
+	for _, f := range files {
+		f = strings.TrimSpace(f)
+		if f == "" || ShouldSkipPath(f) {
 			continue
 		}
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-			lineNum++
-			addedLine := strings.TrimPrefix(line, "+")
-			if ShouldSkipPath(currentFile) {
-				continue
-			}
-			lineFindings := ScanText(currentFile, addedLine)
-			for i := range lineFindings {
-				lineFindings[i].LineNumber = lineNum
-			}
-			findings = append(findings, lineFindings...)
+		findings, err := ScanFile(f)
+		if err != nil {
+			continue
 		}
+		allFindings = append(allFindings, findings...)
 	}
 
-	return findings, nil
+	return allFindings, nil
 }
 
-// InstallPreCommitHook installs a safe and idempotent pre-commit hook into .git/hooks/pre-commit.
+// InstallPreCommitHook installs an idempotent Git pre-commit hook script.
 func InstallPreCommitHook() error {
-	gitHooksDir := filepath.Join(".git", "hooks")
-	if _, err := os.Stat(gitHooksDir); os.IsNotExist(err) {
-		return fmt.Errorf("current directory is not a Git repository root (.git/hooks directory not found)")
+	gitDir := "."
+	hooksDir := filepath.Join(gitDir, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
-	hookPath := filepath.Join(gitHooksDir, "pre-commit")
+	hookPath := filepath.Join(hooksDir, "pre-commit")
+	hookScript := `#!/bin/sh
+# DevVault Automated Pre-Commit Secret Scanner
+# Generated automatically by devvault install-hook
 
-	hookMarker := "# DevVault pre-commit secret scanner"
-	hookScript := fmt.Sprintf(`#!/bin/sh
-%s
-devvault scan --staged
+if command -v devvault >/dev/null 2>&1; then
+    DEVVAULT_BIN="devvault"
+elif [ -f "./devvault.exe" ]; then
+    DEVVAULT_BIN="./devvault.exe"
+elif [ -f "./devvault" ]; then
+    DEVVAULT_BIN="./devvault"
+else
+    DEVVAULT_BIN="go run ./cmd/devvault"
+fi
+
+echo "🔍 Running DevVault pre-commit secret scan..."
+$DEVVAULT_BIN scan --staged
 if [ $? -ne 0 ]; then
-    echo "❌ [DevVault] Secret scanner blocked commit: Potential secret leaks detected!"
+    echo "❌ Commit aborted: DevVault detected secret leak(s) in staged files."
+    echo "💡 Fix or unstage sensitive files before committing."
     exit 1
 fi
-`, hookMarker)
+`
 
-	if existingData, err := os.ReadFile(hookPath); err == nil {
-		if strings.Contains(string(existingData), hookMarker) {
-			return nil
-		}
-	}
-
-	err := os.WriteFile(hookPath, []byte(hookScript), 0755)
-	if err != nil {
-		return fmt.Errorf("failed to write git pre-commit hook: %w", err)
+	if err := os.WriteFile(hookPath, []byte(hookScript), 0755); err != nil {
+		return fmt.Errorf("failed to write pre-commit hook: %w", err)
 	}
 
 	return nil
+}
+
+func calculateShannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0.0
+	}
+
+	freq := make(map[rune]float64)
+	for _, char := range s {
+		freq[char]++
+	}
+
+	var entropy float64
+	length := float64(len(s))
+	for _, count := range freq {
+		p := count / length
+		entropy -= p * (math.Log2(p))
+	}
+
+	return entropy
 }

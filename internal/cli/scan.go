@@ -62,7 +62,7 @@ Output includes severity, file path, line number, secret type, and redacted prev
 
 		cmd.Printf("\n❌ Detected %d potential secret leak(s)!\n\n", len(findings))
 		for i, f := range findings {
-			cmd.Printf("[%d] ❌ Possible %s (Severity: %s)\n", i+1, f.SecretType, f.Severity)
+			cmd.Printf("[%d] ❌ %s (Severity: %s)\n", i+1, f.SecretType, f.Severity)
 			cmd.Printf("    File: %s\n", f.FilePath)
 			cmd.Printf("    Line: %d\n", f.LineNumber)
 			cmd.Printf("    Preview: %s\n\n", f.RedactedVal)
