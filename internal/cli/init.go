@@ -56,6 +56,12 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("failed to initialize vault: %w", err)
 		}
 
+		// Reset active profile to 'default' in config.json upon initialization
+		cfg := &config.AppConfig{
+			ActiveProfile: config.DefaultProfile,
+		}
+		_ = config.SaveConfig(cfg)
+
 		cmd.Println("✅ DevVault successfully initialized!")
 		cmd.Printf("📁 Database location: %s\n", dbPath)
 		cmd.Println("💡 Tip: Vault database initialized with strict permissions.")
