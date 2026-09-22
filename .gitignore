@@ -1,29 +1,38 @@
-# Binaries
+# Binaries & Build Artifacts
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+*.test
+*.out
+*.prof
 bin/
+dist/
 devvault
 devvault.exe
 
-# Database & Local Vault Files
+# Database & Vault Files
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+*.dv
 .devvault/
 .devvault.json
 devvault_backup.json
 
-# Test & Coverage Files
-*.out
-*.test
-*.prof
-coverage.txt
+# Environment & Local Configuration
+.env
+.env.local
+.env.*.local
+*.local.json
 
-# IDE & System Files
+# Test & Coverage Files
+coverage.txt
+coverage.out
+
+# IDE Metadata & OS Artifacts
 .idea/
 .vscode/
 *.swp
