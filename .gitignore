@@ -9,8 +9,8 @@
 *.prof
 bin/
 dist/
-devvault
-devvault.exe
+/devvault
+/devvault.exe
 
 # Database & Vault Files
 *.db
