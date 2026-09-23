@@ -9,7 +9,7 @@ before:
 builds:
   - id: devvault
     binary: devvault
-    main: ./cmd/devvault
+    main: ./cmd/devvault/main.go
     env:
       - CGO_ENABLED=0
     goos:
@@ -27,11 +27,13 @@ builds:
       - -X github.com/Saravanakumar2602/DevVault/internal/cli.Version={{.Version}}
 
 archives:
-  - format: tar.gz
+  - formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
+    formats_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: "checksums.txt"
