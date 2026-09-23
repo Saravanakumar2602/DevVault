@@ -9,10 +9,10 @@
 *.prof
 bin/
 dist/
-devvault
-devvault.exe
-devvault-demo
-devvault-demo.exe
+/devvault
+/devvault.exe
+/devvault-demo
+/devvault-demo.exe
 
 # Database & Vault Files
 *.db
