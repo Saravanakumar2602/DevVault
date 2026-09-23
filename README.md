@@ -134,7 +134,7 @@ $env:DEVVAULT_MASTER_PASSWORD = "demo"
 # Prompt: 🔒 Enter secret value for 'API_KEY': [hidden input]
 
 # Or pass value directly:
-.\devvault.exe set API_KEY "sk_live_998877665544332211" --tags stripe,prod
+.\devvault.exe set API_KEY "demo_api_key_123456" --tags stripe,prod
 .\devvault.exe set DB_PASSWORD "demo_password" --tags postgres
 
 # 4. List secret metadata (values remain encrypted & hidden)

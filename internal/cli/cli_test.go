@@ -179,7 +179,7 @@ func TestEncryptedExportAndImportLifecycle(t *testing.T) {
 
 	buf.Reset()
 	cli.ResetFlags()
-	cli.RootCmd.SetArgs([]string{"set", "STRIPE_SECRET", "sk_live_stripe999"})
+	cli.RootCmd.SetArgs([]string{"set", "STRIPE_SECRET", "demo_stripe_key_999"})
 	if err := cli.RootCmd.Execute(); err != nil {
 		t.Fatalf("set failed: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestEncryptedExportAndImportLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile backup failed: %v", err)
 	}
-	if strings.Contains(string(fileContent), "sk_live_stripe999") {
+	if strings.Contains(string(fileContent), "demo_stripe_key_999") {
 		t.Errorf("SECURITY RISK: Plaintext secret found in export file!")
 	}
 
@@ -240,8 +240,8 @@ func TestEncryptedExportAndImportLifecycle(t *testing.T) {
 	if err := cli.RootCmd.Execute(); err != nil {
 		t.Fatalf("get imported secret failed: %v, output: %s", err, buf.String())
 	}
-	if strings.TrimSpace(buf.String()) != "sk_live_stripe999" {
-		t.Errorf("expected imported secret value 'sk_live_stripe999', got: '%s'", buf.String())
+	if strings.TrimSpace(buf.String()) != "demo_stripe_key_999" {
+		t.Errorf("expected imported secret value 'demo_stripe_key_999', got: '%s'", buf.String())
 	}
 }
 
