@@ -3,12 +3,15 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"devvault/internal/config"
 	"devvault/internal/store"
 
 	"github.com/spf13/cobra"
 )
+
+var flagForceInit bool
 
 var initCmd = &cobra.Command{
 	Use:   "init",
@@ -22,6 +25,13 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
+		if flagForceInit {
+			_ = os.Remove(dbPath)
+			_ = os.Remove(dbPath + "-wal")
+			_ = os.Remove(dbPath + "-shm")
+			_ = os.Remove(dbPath + "-journal")
+		}
+
 		s, err := store.Open(dbPath)
 		if err != nil {
 			return err
@@ -32,8 +42,9 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if init {
+		if init && !flagForceInit {
 			cmd.Println("🔒 DevVault database is already initialized.")
+			cmd.Println("💡 Tip: Use 'devvault init --force' to re-initialize the database with a new password.")
 			return nil
 		}
 
@@ -70,5 +81,6 @@ var initCmd = &cobra.Command{
 }
 
 func init() {
+	initCmd.Flags().BoolVarP(&flagForceInit, "force", "f", false, "Force re-initialization of vault database (overwrites existing vault)")
 	RootCmd.AddCommand(initCmd)
 }
