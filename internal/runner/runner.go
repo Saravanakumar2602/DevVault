@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -31,8 +33,30 @@ func (r *Runner) Run(ctx context.Context, command string, args []string, secretE
 		return 1, fmt.Errorf("no command specified to execute")
 	}
 
+	execCmd := command
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath(execCmd); err != nil {
+			candidate := execCmd
+			if !strings.HasSuffix(strings.ToLower(candidate), ".exe") {
+				candidate += ".exe"
+			}
+			if path, err2 := exec.LookPath(candidate); err2 == nil {
+				execCmd = path
+			} else {
+				sysRoot := os.Getenv("SystemRoot")
+				if sysRoot == "" {
+					sysRoot = `C:\Windows`
+				}
+				sys32Path := filepath.Join(sysRoot, "System32", candidate)
+				if _, err3 := os.Stat(sys32Path); err3 == nil {
+					execCmd = sys32Path
+				}
+			}
+		}
+	}
+
 	// Create command directly to prevent shell injection vulnerabilities
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd := exec.CommandContext(ctx, execCmd, args...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

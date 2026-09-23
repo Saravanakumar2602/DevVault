@@ -23,6 +23,7 @@ var DefaultIgnoredPaths = []string{
 	"go.mod",
 	"scanner.go",
 	"scanner_test.go",
+	"validation.go",
 }
 
 // Finding represents a single detected secret leak.
